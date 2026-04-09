@@ -39,9 +39,7 @@ $$Ending\ Stock = (Beginning\ Stock + Received + Other\ In + WIP\ In + Returns) 
 * **Database:** MySQL/MariaDB (configured for port `3308` by default).
 * **Timezone:** Hardcoded to `Asia/Manila` to ensure reporting accuracy within Philippine business hours.
 
-### 5. Actual Screenshots
+### 5. Actual Screenshots (See Assets folder)
 <img width="1366" height="768" alt="generate-report-ui" src="https://github.com/user-attachments/assets/5a7397d3-0aa2-48f2-af4f-a44e8f5173f1" />
-<img width="1366" height="768" alt="inventory-view-bottom" src="https://github.com/user-attachments/assets/2ae07098-2637-4a42-8012-0ac99ecd6f1d" />
-<img width="1366" height="768" alt="inventory-view-top" src="https://github.com/user-attachments/assets/5c192bf1-5740-430e-bade-31443e736e73" />
 
 
