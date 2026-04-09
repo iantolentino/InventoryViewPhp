@@ -3,11 +3,11 @@
 session_start();
 
 // Database configuration
-define('DB_HOST', 'localhost');
-define('DB_PORT', '3308');
-define('DB_USER', 'root');
-define('DB_PASSWORD', '3pf_@dm!n');
-define('DB_NAME', 'imfsdb');
+define('DB_HOST', 'your host');
+define('DB_PORT', 'your port');
+define('DB_USER', 'your username');
+define('DB_PASSWORD', 'your password');
+define('DB_NAME', 'your dbname');
 
 // Create connection with timeout and error handling
 function getDBConnection() {
