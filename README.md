@@ -38,5 +38,3 @@ $$Ending\ Stock = (Beginning\ Stock + Received + Other\ In + WIP\ In + Returns) 
 * **Environment:** PHP 7.4+ with `mysqli` extension.
 * **Database:** MySQL/MariaDB (configured for port `3308` by default).
 * **Timezone:** Hardcoded to `Asia/Manila` to ensure reporting accuracy within Philippine business hours.
-
-> **Note for Nanox IT:** The system is currently configured to connect to the `imfsdb` database using the `root` user. For production security, it is recommended to transition these credentials to a dedicated service account with restricted privileges.
