@@ -1,6 +1,6 @@
 # EMRIS Inventory Report System — Feature Summary
 
-> **Context:** The client's previous inventory generator stopped working.
+> **Context:** The Nanox's previous inventory generator stopped/slow working.
 > This system was built from scratch as a replacement, reading directly
 > from their existing `imfsdb` database with no changes to their data structure.
 
@@ -8,7 +8,7 @@
 
 ## The Problem with the Old System
 
-- The old generator could no longer produce reports
+- The old generator could no longer produce reports/ it takes too long to provide data and sometimes can go on timeout wasting time
 - No fallback or alternative existed
 - Staff had no way to export or view current inventory figures
 - Data was still being entered daily into the database — it just couldn't be read out
