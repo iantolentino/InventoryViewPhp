@@ -1,424 +1,580 @@
-
 <?php
-// inventory_view.php - HTML table to validate inventory calcs (By FA Code)
-// Requirements: config.php must expose getDBConnection()
-
 require_once 'config.php';
 
-// ----------------------
-// Inputs
-// ----------------------
-$year         = $_GET['year']        ?? date('Y');
-$month        = $_GET['month']       ?? date('n');   // may be 'all'
-$fa_filter    = trim($_GET['fa_code'] ?? '');        // filter by FA Code (LIKE search)
+/*
+|--------------------------------------------------------------------------
+| Inputs
+|--------------------------------------------------------------------------
+*/
+$year         = isset($_GET['year'])      ? trim($_GET['year'])      : date('Y');
+$month        = isset($_GET['month'])     ? trim($_GET['month'])     : date('n');
+$fa_filter    = isset($_GET['fa_code'])   ? trim($_GET['fa_code'])   : '';
 $include_zero = isset($_GET['include_zero']) ? 1 : 0;
 
-// Validate basic inputs
-if (!is_numeric($year)) {
-    http_response_code(400);
-    die("Invalid 'year' parameter.");
-}
-if (!is_numeric($month) && strtolower((string)$month) !== 'all') {
-    http_response_code(400);
-    die("Invalid 'month' parameter.");
-}
+if (!is_numeric($year)) die('Invalid year');
+if (!is_numeric($month) && strtolower($month) !== 'all') die('Invalid month');
 
-// Date range
-if (strtolower((string)$month) === 'all') {
-    $start_date = "{$year}-01-01";
-    $end_date   = "{$year}-12-31";
-    $period     = "Year {$year}";
+/*
+|--------------------------------------------------------------------------
+| Date range
+|--------------------------------------------------------------------------
+*/
+if (strtolower($month) === 'all') {
+    $start_date = $year . '-01-01';
+    $end_date   = $year . '-12-31';
+    $period     = 'Year ' . $year;
 } else {
-    $start_date = "{$year}-" . str_pad($month, 2, '0', STR_PAD_LEFT) . "-01";
-    $end_date   = date("Y-m-t", strtotime($start_date)); // last day of month
-    $month_name = date("F", strtotime($start_date));
-    $period     = "{$month_name} {$year}";
+    $month      = (int) $month;
+    $start_date = sprintf('%04d-%02d-01', $year, $month);
+    $end_date   = date('Y-m-t', strtotime($start_date));
+    $period     = date('F Y', strtotime($start_date));
 }
 
 $conn = getDBConnection();
-if (!$conn) { die("DB connection failed."); }
 $conn->set_charset('utf8mb4');
 
-// ----------------------
-// Fetch Items (with latest price by id DESC)
-// Optional FA Code filter
-// ----------------------
-$items_sql = "
-    SELECT DISTINCT
+/*
+|--------------------------------------------------------------------------
+| 1. Fetch items
+|    FIX: WHERE i.deleted_at IS NULL — soft-deleted items are now excluded.
+|         Previously deleted items could still appear in the report.
+|--------------------------------------------------------------------------
+*/
+$items  = [];
+$params = [];
+$types  = '';
+
+$sql = "
+    SELECT
         i.id,
         i.fa_code,
         i.mat_type,
         i.prmode,
         i.description,
-        COALESCE((
-            SELECT price FROM pricelists p
-            WHERE p.item_id = i.id
-            ORDER BY p.id DESC
-            LIMIT 1
-        ), 0) AS price
+        COALESCE(
+            (SELECT price
+             FROM pricelists p
+             WHERE p.item_id = i.id
+             ORDER BY p.id DESC
+             LIMIT 1),
+            0
+        ) AS price
     FROM items i
-    /** WHERE_CLAUSE **/
-    ORDER BY i.fa_code
+    WHERE i.deleted_at IS NULL
 ";
-
-$where  = "";
-$params = [];
-$types  = "";
 
 if ($fa_filter !== '') {
-    $where = "WHERE i.fa_code LIKE ?";
-    $params[] = "%{$fa_filter}%";
-    $types .= "s";
+    $sql     .= " AND i.fa_code LIKE ? ";
+    $params[] = '%' . $fa_filter . '%';
+    $types   .= 's';
 }
 
-$items_sql = str_replace("/** WHERE_CLAUSE **/", $where, $items_sql);
-$stmt_items = $conn->prepare($items_sql);
-if (!$stmt_items) { die("Items prepare failed: " . htmlspecialchars($conn->error)); }
-if ($types !== "") { $stmt_items->bind_param($types, ...$params); }
-$stmt_items->execute();
-$res_items = $stmt_items->get_result();
+$sql .= " ORDER BY i.fa_code ";
 
-$items = [];
-while ($row = $res_items->fetch_assoc()) {
-    $items[$row['id']] = $row; // index by item_id
+$stmt = $conn->prepare($sql);
+if ($types !== '') {
+    $stmt->bind_param($types, ...$params);
 }
-$stmt_items->close();
-
-// If no items found, show minimal page
-if (empty($items)) {
-    ?>
-    <!doctype html>
-    <html lang="en">
-    <head>
-        <meta charset="utf-8">
-        <title>Inventory Test View</title>
-        <style>
-            body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-            .container { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
-            .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
-            .form-row { display: flex; gap: 12px; flex-wrap: wrap; }
-            label { font-weight: 600; }
-            input[type="text"], select { padding: 6px 8px; }
-            button { padding: 8px 12px; }
-            .muted { color: #666; }
-        </style>
-    </head>
-    <body>
-    <div class="container">
-        <h2>Inventory Test View (By FA Code)</h2>
-        <div class="card">
-            <form method="get" class="form-row">
-                <div>
-                    <label>Year</label><br>
-                    <input type="text" name="year" value="<?php echo htmlspecialchars($year); ?>">
-                </div>
-                <div>
-                    <label>Month</label><br>
-                    <select name="month">
-                        <option value="all" <?php echo strtolower((string)$month)==='all'?'selected':''; ?>>All</option>
-                        <?php
-                        for ($m=1; $m<=12; $m++) {
-                            $sel = ((string)$month === (string)$m) ? 'selected' : '';
-                            echo "<option value=\"{$m}\" {$sel}>".date('F', mktime(0,0,0,$m,1))."</option>";
-                        }
-                        ?>
-                    </select>
-                </div>
-                <div>
-                    <label>FA Code (LIKE)</label><br>
-                    <input type="text" name="fa_code" value="<?php echo htmlspecialchars($fa_filter); ?>" placeholder="e.g., FA-001">
-                </div>
-                <div style="align-self: end;">
-                    <label><input type="checkbox" name="include_zero" value="1" <?php echo $include_zero ? 'checked' : ''; ?>> Include zero rows</label>
-                </div>
-                <div style="align-self: end;">
-                    <button type="submit">Run</button>
-                </div>
-            </form>
-        </div>
-
-        <p class="muted">Period: <strong><?php echo htmlspecialchars($period); ?></strong> (<?php echo htmlspecialchars($start_date); ?> to <?php echo htmlspecialchars($end_date); ?>)</p>
-        <p>No items matched the FA Code filter.</p>
-    </div>
-    </body>
-    </html>
-    <?php
-    $conn->close();
-    exit;
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $items[(int) $row['id']] = $row;
 }
+$stmt->close();
 
-// ----------------------
-// Beginning Stock (OLD SYSTEM STYLE):
-// Latest non-zero receivings.beg_stock BEFORE $start_date per item.
-// We also capture the source date to show it in the UI.
-// ----------------------
-$beginning_stocks = [];    // value
-$beginning_sources = [];   // source date (e.g., 2025-12-22)
+/*
+|--------------------------------------------------------------------------
+| 2. Item eligibility gate
+|    Only show items that have at least one receiving OR issuance record
+|    up to (and including) the end of the selected period.
+|    This prevents brand-new items with zero history from cluttering the
+|    report, and ensures the list updates automatically every day as new
+|    receivings / issuances are entered.
+|
+|    FIX: deleted_at IS NULL added — deleted receivings no longer grant
+|         eligibility to an item.
+|--------------------------------------------------------------------------
+*/
+$validItems = [];
 
-$query_beg_open = "
-    SELECT item_id, beg_stock, received_date, id
+$stmt = $conn->prepare("
+    SELECT DISTINCT item_id
     FROM receivings
-    WHERE received_date < ?
-      AND COALESCE(beg_stock, 0) > 0
-    ORDER BY item_id, received_date DESC, id DESC
-";
-$stmt_beg = $conn->prepare($query_beg_open);
-if (!$stmt_beg) { $conn->close(); die("Beginning prep failed: " . htmlspecialchars($conn->error)); }
-$stmt_beg->bind_param("s", $start_date);
-$stmt_beg->execute();
-$res_beg = $stmt_beg->get_result();
-
-// Iterate and take the first row per item_id (latest by date/id)
-while ($row = $res_beg->fetch_assoc()) {
-    $iid = (int)$row['item_id'];
-    if (!array_key_exists($iid, $beginning_stocks)) {
-        $beginning_stocks[$iid] = (float)$row['beg_stock'];
-        $beginning_sources[$iid] = $row['received_date']; // e.g., "2025-12-22"
-    }
+    WHERE received_date <= ?
+      AND deleted_at IS NULL
+");
+$stmt->bind_param('s', $end_date);
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $validItems[(int) $row['item_id']] = true;
 }
-$stmt_beg->close();
+$stmt->close();
 
-// ----------------------
-// Receivings within period (SUM of components)
-// ----------------------
-$receivings_data = [];
-$query_rec = "SELECT item_id,
-                     COALESCE(SUM(quantity),   0) AS qty,
-                     COALESCE(SUM(other_in),   0) AS other_in,
-                     COALESCE(SUM(wip),        0) AS wip,
-                     COALESCE(SUM(other_out),  0) AS other_out,
-                     COALESCE(SUM(return_qty), 0) AS returns
-              FROM receivings
-              WHERE received_date >= ? AND received_date <= ?
-              GROUP BY item_id";
-$stmt_rec = $conn->prepare($query_rec);
-if (!$stmt_rec) { $conn->close(); die("Receivings prep failed: " . htmlspecialchars($conn->error)); }
-$stmt_rec->bind_param("ss", $start_date, $end_date);
-$stmt_rec->execute();
-$res_rec = $stmt_rec->get_result();
-while ($row = $res_rec->fetch_assoc()) {
-    $receivings_data[$row['item_id']] = $row;
+$stmt = $conn->prepare("
+    SELECT DISTINCT item_id
+    FROM issuances
+    WHERE created_at <= ?
+");
+$stmt->bind_param('s', $end_date);
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $validItems[(int) $row['item_id']] = true;
 }
-$stmt_rec->close();
+$stmt->close();
 
-// ----------------------
-// Issuances within period
-// ----------------------
-$issuances_data = [];
-$query_iss = "SELECT item_id, COALESCE(SUM(quantity), 0) AS total
-              FROM issuances
-              WHERE created_at >= ? AND created_at <= ?
-              GROUP BY item_id";
-$stmt_iss = $conn->prepare($query_iss);
-if (!$stmt_iss) { $conn->close(); die("Issuances prep failed: " . htmlspecialchars($conn->error)); }
-$stmt_iss->bind_param("ss", $start_date, $end_date);
-$stmt_iss->execute();
-$res_iss = $stmt_iss->get_result();
-while ($row = $res_iss->fetch_assoc()) {
-    $issuances_data[$row['item_id']] = (float)$row['total'];
+/*
+|--------------------------------------------------------------------------
+| 3. Beginning stock — latest snapshot BEFORE the period starts
+|
+|    How it works (daily accuracy):
+|    For each item we find the receiving row with the highest received_date
+|    that is still BEFORE $start_date.  Its beg_stock column is the
+|    carry-over balance.  Because receivings are entered daily, this always
+|    reflects the true balance up to yesterday (or whenever the last entry
+|    was recorded) automatically — no manual monthly rollover needed.
+|
+|    FIX: deleted_at IS NULL added to both the sub-query and the outer
+|         query so that soft-deleted rows cannot contaminate the balance.
+|--------------------------------------------------------------------------
+*/
+$beg_stock = [];
+$beg_src   = [];
+
+$stmt = $conn->prepare("
+    SELECT r.item_id, r.beg_stock, r.received_date
+    FROM receivings r
+    INNER JOIN (
+        SELECT item_id, MAX(received_date) AS d
+        FROM receivings
+        WHERE received_date < ?
+          AND deleted_at IS NULL
+        GROUP BY item_id
+    ) x
+      ON  r.item_id       = x.item_id
+      AND r.received_date = x.d
+    WHERE r.deleted_at IS NULL
+");
+$stmt->bind_param('s', $start_date);
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $id             = (int) $row['item_id'];
+    $beg_stock[$id] = (float) $row['beg_stock'];
+    $beg_src[$id]   = $row['received_date'];
 }
-$stmt_iss->close();
+$stmt->close();
 
-// ----------------------
-// Build rows (apply include_zero)
-// ----------------------
-$rows = [];
+/*
+|--------------------------------------------------------------------------
+| 4. Receivings within the period (daily roll-up)
+|
+|    Every receiving row entered for any day inside [start_date, end_date]
+|    is included.  Because staff enter receivings daily, this figure is
+|    always current as of today.
+|
+|    FIX: deleted_at IS NULL — deleted receiving entries no longer add to
+|         the quantities.
+|--------------------------------------------------------------------------
+*/
+$rec = [];
+
+$stmt = $conn->prepare("
+    SELECT
+        item_id,
+        SUM(quantity)   AS qty,
+        SUM(other_in)   AS oi,
+        SUM(wip)        AS wp,
+        SUM(other_out)  AS oo,
+        SUM(return_qty) AS rt
+    FROM receivings
+    WHERE received_date >= ?
+      AND received_date <= ?
+      AND deleted_at IS NULL
+    GROUP BY item_id
+");
+$stmt->bind_param('ss', $start_date, $end_date);
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $rec[(int) $row['item_id']] = $row;
+}
+$stmt->close();
+
+/*
+|--------------------------------------------------------------------------
+| 5. Issuances within the period
+|--------------------------------------------------------------------------
+*/
+$iss = [];
+
+$stmt = $conn->prepare("
+    SELECT item_id, SUM(quantity) AS t
+    FROM issuances
+    WHERE created_at >= ?
+      AND created_at <= ?
+    GROUP BY item_id
+");
+$stmt->bind_param('ss', $start_date, $end_date);
+$stmt->execute();
+$r = $stmt->get_result();
+while ($row = $r->fetch_assoc()) {
+    $iss[(int) $row['item_id']] = (float) $row['t'];
+}
+$stmt->close();
+
+/*
+|--------------------------------------------------------------------------
+| 6. Build rows
+|--------------------------------------------------------------------------
+*/
+$rows        = [];
+$total_value = 0;
 $total_items = 0;
-$total_value = 0.0;
 
-foreach ($items as $item_id => $item) {
-    // BEGINNING = latest non-zero beg_stock before start_date (from receivings)
-    $beg_stock = $beginning_stocks[$item_id] ?? 0.0;
-    $beg_src   = $beginning_sources[$item_id] ?? null;
+foreach ($items as $id => $i) {
 
-    $received  = 0.0;
-    $other_in  = 0.0;
-    $wip       = 0.0;
-    $other_out = 0.0;
-    $returns   = 0.0;
+    // Skip items with no warehouse history at all
+    if (!isset($validItems[$id])) continue;
 
-    if (isset($receivings_data[$item_id])) {
-        $rec       = $receivings_data[$item_id];
-        $received  = (float)$rec['qty'];
-        $other_in  = (float)$rec['other_in'];
-        $wip       = (float)$rec['wip'];
-        $other_out = (float)$rec['other_out'];
-        $returns   = (float)$rec['returns'];
-    }
+    $b   = $beg_stock[$id] ?? 0;
+    $src = $beg_src[$id]   ?? null;
+    $q   = (float) ($rec[$id]['qty'] ?? 0);
+    $oi  = (float) ($rec[$id]['oi']  ?? 0);
+    $wp  = (float) ($rec[$id]['wp']  ?? 0);
+    $oo  = (float) ($rec[$id]['oo']  ?? 0);
+    $rt  = (float) ($rec[$id]['rt']  ?? 0);
+    $is  = (float) ($iss[$id]        ?? 0);
 
-    $issued = $issuances_data[$item_id] ?? 0.0;
-    $price  = (float)$item['price'];
-
+    /*
+    | include_zero logic
+    | ------------------
+    | When UNCHECKED (default): hide rows where the item had absolutely
+    |   zero beginning balance AND zero movement in the period.
+    |   Items that are simply depleted (end = 0 but had activity) still
+    |   appear so staff can see what was fully consumed.
+    |
+    | When CHECKED: show every eligible item, even if all values are 0.
+    |   Useful when you need a full master list for a physical count.
+    */
     if (!$include_zero
-        && $beg_stock == 0.0 && $received == 0.0 && $other_in == 0.0 && $wip == 0.0
-        && $returns == 0.0 && $issued == 0.0 && $other_out == 0.0) {
+        && $b  == 0 && $q  == 0 && $oi == 0
+        && $wp == 0 && $rt == 0 && $is == 0 && $oo == 0) {
         continue;
     }
 
-    // Detailed Ending formula (same as program logic)
-    $end_stock = $beg_stock + $received + $other_in + $wip + $returns - $issued - $other_out;
-    if ($end_stock < 0.0) { $end_stock = 0.0; }
-    $end_cost  = $end_stock * $price;
+    $end = $b + $q + $oi + $wp + $rt - $is - $oo;
+    if ($end < 0) $end = 0;
+
+    $cost = $end * (float) $i['price'];
 
     $rows[] = [
-        'fa_code'     => $item['fa_code'],
-        'mat_type'    => $item['mat_type'],
-        'prmode'      => $item['prmode'],
-        'description' => $item['description'],
-        'price'       => $price,
-        'beg_stock'   => $beg_stock,
-        'beg_src'     => $beg_src,    // date we used for opening
-        'received'    => $received,
-        'other_in'    => $other_in,
-        'wip'         => $wip,
-        'returns'     => $returns,
-        'issued'      => $issued,
-        'other_out'   => $other_out,
-        'end_stock'   => $end_stock,
-        'end_cost'    => $end_cost,
+        'fa'   => $i['fa_code'],
+        'mat'  => $i['mat_type'],
+        'pr'   => $i['prmode'],
+        'desc' => $i['description'],
+        'price'=> (float) $i['price'],
+        'beg'  => $b,
+        'src'  => $src,
+        'rec'  => $q,
+        'oi'   => $oi,
+        'wp'   => $wp,
+        'rt'   => $rt,
+        'is'   => $is,
+        'oo'   => $oo,
+        'end'  => $end,
+        'cost' => $cost,
     ];
 
     $total_items++;
-    $total_value += $end_cost;
+    $total_value += $cost;
 }
 
-// Sorting by FA Code (already ordered, but ensure stable)
-usort($rows, function($a, $b) {
-    return strcmp($a['fa_code'], $b['fa_code']);
-});
+usort($rows, fn($a, $b) => strcmp($a['fa'], $b['fa']));
 
-// ----------------------
-// Render HTML
-// ----------------------
+$conn->close();
 ?>
 <!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <title>Inventory Test View (Table by FA Code)</title>
-    <style>
-        body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-        .container { max-width: 1400px; margin: 24px auto; padding: 0 16px; }
-        .card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
-        .form-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-        label { font-weight: 600; }
-        input[type="text"], select { padding: 6px 8px; }
-        button { padding: 8px 12px; }
-        table { border-collapse: collapse; width: 100%; margin-top: 16px; font-size: 14px; }
-        th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: right; }
-        th:nth-child(1), td:nth-child(1),
-        th:nth-child(2), td:nth-child(2),
-        th:nth-child(4), td:nth-child(4) { text-align: left; }
-        thead th { background: #f7f7f7; position: sticky; top: 0; z-index: 1; }
-        .muted { color: #666; }
-        .summary { margin-top: 12px; font-weight: 600; }
-        .note { font-size: 12px; color: #555; }
-        .beg-source { display:block; font-size:11px; color:#777; margin-top:2px; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventory View — <?php echo htmlspecialchars($period); ?></title>
+<style>
+/* ── reset & base ── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 13px;
+    background: #f0f2f5;
+    color: #1a1a2e;
+}
+
+/* ── top bar ── */
+.topbar {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,.35);
+}
+.topbar h1 { font-size: 16px; font-weight: 600; letter-spacing: .4px; }
+.topbar .period-badge {
+    background: #667eea;
+    border-radius: 20px;
+    padding: 4px 14px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ── filter card ── */
+.filter-card {
+    background: #fff;
+    margin: 20px 20px 0;
+    border-radius: 10px;
+    padding: 16px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    align-items: flex-end;
+}
+.filter-card label { display: block; font-size: 11px; font-weight: 600; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .5px; }
+.filter-card input[type=text],
+.filter-card select {
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 13px;
+    background: #fafafa;
+    outline: none;
+    transition: border-color .15s;
+}
+.filter-card input[type=text]:focus,
+.filter-card select:focus { border-color: #667eea; background: #fff; }
+.filter-card .check-wrap {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding-bottom: 8px;
+    cursor: pointer;
+}
+.filter-card .check-wrap input { width: 15px; height: 15px; cursor: pointer; accent-color: #667eea; }
+.filter-card .check-wrap span { font-size: 13px; }
+.btn-run {
+    background: #667eea;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 22px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+}
+.btn-run:hover { background: #5a6fd8; }
+
+/* ── summary strip ── */
+.summary {
+    margin: 14px 20px 0;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.summary .card {
+    background: #fff;
+    border-radius: 10px;
+    padding: 12px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    flex: 1;
+    min-width: 180px;
+}
+.summary .card .label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: .5px; }
+.summary .card .value { font-size: 22px; font-weight: 700; color: #1a1a2e; margin-top: 4px; }
+.summary .card .value.green { color: #16a34a; }
+
+/* ── table wrapper ── */
+.table-wrap {
+    margin: 14px 20px 30px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.08);
+    overflow: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+}
+
+thead tr {
+    background: #1a1a2e;
+    color: #fff;
+    position: sticky;
+    top: 52px; /* below topbar */
+}
+thead th {
+    padding: 10px 10px;
+    text-align: center;
+    font-weight: 600;
+    letter-spacing: .3px;
+    white-space: nowrap;
+}
+thead th.left { text-align: left; }
+
+tbody tr { border-bottom: 1px solid #f0f0f0; transition: background .1s; }
+tbody tr:hover { background: #f5f7ff; }
+
+td {
+    padding: 8px 10px;
+    text-align: right;
+    white-space: nowrap;
+    color: #333;
+}
+td.left { text-align: left; }
+td.fa   { font-family: monospace; font-size: 11.5px; color: #444; }
+td.desc { max-width: 260px; white-space: normal; word-break: break-word; }
+td.zero { color: #bbb; }
+
+.beg-src { font-size: 10px; color: #999; margin-top: 2px; }
+
+/* end stock: highlight negatives (shouldn't happen) and zeros */
+td.end-zero { color: #f87171; font-weight: 600; }
+
+/* cost column */
+td.cost { font-weight: 600; color: #1a1a2e; }
+
+/* ── empty state ── */
+.empty {
+    text-align: center;
+    padding: 60px 20px;
+    color: #aaa;
+    font-size: 14px;
+}
+</style>
 </head>
 <body>
-<div class="container">
-    <h2>Inventory Test View (By FA Code)</h2>
 
+<!-- Top bar -->
+<div class="topbar">
+    <h1>📦 Inventory Report</h1>
+    <span class="period-badge"><?php echo htmlspecialchars($period); ?></span>
+</div>
+
+<!-- Filter form -->
+<form method="get" class="filter-card">
+
+    <div>
+        <label>Year</label>
+        <input type="text" name="year" value="<?php echo htmlspecialchars($year); ?>" size="6" maxlength="4">
+    </div>
+
+    <div>
+        <label>Month</label>
+        <select name="month">
+            <option value="all"<?php if (strtolower($_GET['month'] ?? '') === 'all') echo ' selected'; ?>>— Full Year —</option>
+            <?php for ($m = 1; $m <= 12; $m++): ?>
+                <option value="<?php echo $m; ?>"<?php if (isset($month) && $month == $m) echo ' selected'; ?>>
+                    <?php echo date('F', mktime(0,0,0,$m,1)); ?>
+                </option>
+            <?php endfor; ?>
+        </select>
+    </div>
+
+    <div>
+        <label>FA Code Filter</label>
+        <input type="text" name="fa_code" value="<?php echo htmlspecialchars($fa_filter); ?>" placeholder="e.g. FS-CUT" size="16">
+    </div>
+
+    <label class="check-wrap">
+        <input type="checkbox" name="include_zero" value="1"<?php if ($include_zero) echo ' checked'; ?>>
+        <span>Include zero-balance items</span>
+    </label>
+
+    <button type="submit" class="btn-run">Run Report</button>
+
+</form>
+
+<!-- Summary cards -->
+<div class="summary">
     <div class="card">
-        <form method="get" class="form-row">
-            <div>
-                <label>Year</label><br>
-                <input type="text" name="year" value="<?php echo htmlspecialchars($year); ?>">
-            </div>
-            <div>
-                <label>Month</label><br>
-                <select name="month">
-                    <option value="all" <?php echo strtolower((string)$month)==='all'?'selected':''; ?>>All</option>
-                    <?php
-                    for ($m=1; $m<=12; $m++) {
-                        $sel = ((string)$month === (string)$m) ? 'selected' : '';
-                        echo "<option value=\"{$m}\" {$sel}>".date('F', mktime(0,0,0,$m,1))."</option>";
-                    }
-                    ?>
-                </select>
-            </div>
-            <div>
-                <label>FA Code (LIKE)</label><br>
-                <input type="text" name="fa_code" value="<?php echo htmlspecialchars($fa_filter); ?>" placeholder="e.g., FA-001">
-            </div>
-            <div style="align-self: end;">
-                <label><input type="checkbox" name="include_zero" value="1" <?php echo $include_zero ? 'checked' : ''; ?>> Include zero rows</label>
-            </div>
-            <div style="align-self: end;">
-                <button type="submit">Run</button>
-            </div>
-        </form>
-
-        <p class="muted">Period: <strong><?php echo htmlspecialchars($period); ?></strong> (<?php echo htmlspecialchars($start_date); ?> to <?php echo htmlspecialchars($end_date); ?>)</p>
-
-        <table>
-            <thead>
-                <tr>
-                    <th>FA Code</th>
-                    <th>Material Type</th>
-                    <th>PR Mode</th>
-                    <th>Description</th>
-                    <th>Unit Price</th>
-                    <th>Beginning Stock</th>
-                    <th>Received</th>
-                    <th>Other In</th>
-                    <th>WIP In</th>
-                    <th>Returns</th>
-                    <th>Issued</th>
-                    <th>Other Out</th>
-                    <th>Ending Stock</th>
-                    <th>Ending Cost</th>
-                </tr>
-            </thead>
-            <tbody>
-            <?php
-            if (empty($rows)) {
-                echo '<tr><td colspan="14" style="text-align:center;color:#666;">No data for selected filters.</td></tr>';
-            } else {
-                foreach ($rows as $r) {
-                    echo "<tr>";
-                    echo "<td>".htmlspecialchars($r['fa_code'])."</td>";
-                    echo "<td>".htmlspecialchars($r['mat_type'])."</td>";
-                    echo "<td>".htmlspecialchars($r['prmode'])."</td>";
-                    echo "<td>".htmlspecialchars($r['description'])."</td>";
-                    echo "<td>".number_format($r['price'], 2)."</td>";
-
-                    // Beginning Stock (with source date shown)
-                    $title = $r['beg_src'] ? ("Opening beg_stock as of ".$r['beg_src']) : "No opening beg_stock found before start date";
-                    echo "<td title=\"".htmlspecialchars($title)."\">".number_format($r['beg_stock'], 2);
-                    if (!empty($r['beg_src'])) {
-                        echo "<span class='beg-source'>as of ".htmlspecialchars($r['beg_src'])."</span>";
-                    }
-                    echo "</td>";
-
-                    echo "<td>".number_format($r['received'], 2)."</td>";
-                    echo "<td>".number_format($r['other_in'], 2)."</td>";
-                    echo "<td>".number_format($r['wip'], 2)."</td>";
-                    echo "<td>".number_format($r['returns'], 2)."</td>";
-                    echo "<td>".number_format($r['issued'], 2)."</td>";
-                    echo "<td>".number_format($r['other_out'], 2)."</td>";
-                    echo "<td>".number_format($r['end_stock'], 2)."</td>";
-                    echo "<td>".number_format($r['end_cost'], 2)."</td>";
-                    echo "</tr>";
-                }
-            }
-            ?>
-            </tbody>
-        </table>
-
-        <p class="summary">
-            Total Items: <?php echo number_format($total_items); ?> &nbsp; | &nbsp;
-            Total Inventory Value: <?php echo number_format($total_value, 2); ?>
-        </p>
-        <p class="note">
-            <strong>Beginning Stock</strong> is the latest non-zero <code>receivings.beg_stock</code> before the period start (e.g., 12-22-2025 → 14).<br>
-            <strong>Ending Stock</strong> = Beginning + Received + Other In + WIP In + Returns − Issued − Other Out (floored at 0).<br>
-            <strong>Ending Cost</strong> = Ending Stock × Unit Price (latest by <em>pricelists.id DESC</em>).
-        </p>
+        <div class="label">Period</div>
+        <div class="value"><?php echo htmlspecialchars($period); ?></div>
+    </div>
+    <div class="card">
+        <div class="label">Items Shown</div>
+        <div class="value"><?php echo number_format($total_items); ?></div>
+    </div>
+    <div class="card">
+        <div class="label">Total Inventory Value</div>
+        <div class="value green">¥ <?php echo number_format($total_value, 2); ?></div>
+    </div>
+    <div class="card">
+        <div class="label">Data As Of</div>
+        <div class="value" style="font-size:16px"><?php echo date('Y-m-d'); ?></div>
     </div>
 </div>
+
+<!-- Table -->
+<div class="table-wrap">
+<?php if (empty($rows)): ?>
+    <div class="empty">No items found for the selected period and filters.</div>
+<?php else: ?>
+<table>
+<thead>
+<tr>
+    <th class="left">FA Code</th>
+    <th class="left">Material</th>
+    <th>PR</th>
+    <th class="left">Description</th>
+    <th>Price</th>
+    <th>Beg</th>
+    <th>Rec</th>
+    <th>OI</th>
+    <th>WIP</th>
+    <th>Ret</th>
+    <th>Iss</th>
+    <th>OO</th>
+    <th>End</th>
+    <th>Cost</th>
+</tr>
+</thead>
+<tbody>
+<?php foreach ($rows as $r): ?>
+<tr>
+    <td class="left fa"><?php echo htmlspecialchars($r['fa']); ?></td>
+    <td class="left"><?php echo htmlspecialchars($r['mat']); ?></td>
+    <td><?php echo htmlspecialchars($r['pr']); ?></td>
+    <td class="left desc"><?php echo htmlspecialchars($r['desc']); ?></td>
+    <td><?php echo number_format($r['price'], 2); ?></td>
+    <td>
+        <?php echo number_format($r['beg'], 2); ?>
+        <?php if ($r['src']): ?>
+            <div class="beg-src">as of <?php echo $r['src']; ?></div>
+        <?php endif; ?>
+    </td>
+    <td><?php echo $r['rec']  == 0 ? '<span class="zero">—</span>' : number_format($r['rec'], 2); ?></td>
+    <td><?php echo $r['oi']   == 0 ? '<span class="zero">—</span>' : number_format($r['oi'],  2); ?></td>
+    <td><?php echo $r['wp']   == 0 ? '<span class="zero">—</span>' : number_format($r['wp'],  2); ?></td>
+    <td><?php echo $r['rt']   == 0 ? '<span class="zero">—</span>' : number_format($r['rt'],  2); ?></td>
+    <td><?php echo $r['is']   == 0 ? '<span class="zero">—</span>' : number_format($r['is'],  2); ?></td>
+    <td><?php echo $r['oo']   == 0 ? '<span class="zero">—</span>' : number_format($r['oo'],  2); ?></td>
+    <td class="<?php echo $r['end'] == 0 ? 'end-zero' : ''; ?>"><?php echo number_format($r['end'], 2); ?></td>
+    <td class="cost"><?php echo number_format($r['cost'], 2); ?></td>
+</tr>
+<?php endforeach; ?>
+</tbody>
+</table>
+<?php endif; ?>
+</div>
+
 </body>
 </html>
-<?php
-$conn->close();
