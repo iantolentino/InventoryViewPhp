@@ -30,7 +30,7 @@ foreach ($monthNames as $num => $name) {
 <title>EMRIS — Inventory Report</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+ 
 body {
     font-family: 'Segoe UI', system-ui, sans-serif;
     background: #0f0f1a;
